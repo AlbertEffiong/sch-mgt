@@ -1,0 +1,7 @@
+# Convenience rewrite so http://localhost/school%20mgt/backend/... maps into public/.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ public/$1 [QSA,L]
+</IfModule>
