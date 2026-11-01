@@ -12,20 +12,24 @@ use Syntax\Support\Serialize;
 
 final class OwnerService
 {
-    /** @return array{mrr: float, totalSchools: int, activeSchools: int, expiredSchools: int, totalStudents: int, activeSubscriptions: int} */
+    /** @return array{mrr: float, totalSchools: int, activeSchools: int, expiredSchools: int, totalStudents: int, activeSubscriptions: int, pendingPayments: int} */
     public function dashboard(): array
     {
-        $schools = Db::all('SELECT subscription_status, subscription_expires_at, plan_monthly FROM schools');
-        $now = Clock::nowIso();
+        $schools = Db::all('SELECT subscription_status, subscription_expires_at, plan_monthly, pending_reference FROM schools');
+        $now = Clock::nowDb();
         $mrr = 0.0;
         $active = 0;
         $expired = 0;
+        $pending = 0;
         foreach ($schools as $school) {
             if ($this->isActive($school, $now)) {
                 $active++;
                 $mrr += (float) ($school['plan_monthly'] ?? 0);
             } else {
                 $expired++;
+            }
+            if (($school['pending_reference'] ?? null) !== null && $school['pending_reference'] !== '') {
+                $pending++;
             }
         }
         $totalStudents = (int) Db::value('SELECT COUNT(*) FROM students');
@@ -36,13 +40,14 @@ final class OwnerService
             'expiredSchools' => $expired,
             'totalStudents' => $totalStudents,
             'activeSubscriptions' => $active,
+            'pendingPayments' => $pending,
         ];
     }
 
     public function listSchools(array $query): array
     {
         [$page, $limit, $skip] = Pagination::resolve($query['page'] ?? 1, $query['limit'] ?? 20);
-        $now = Clock::nowIso();
+        $now = Clock::nowDb();
         $where = [];
         $params = [];
 
@@ -58,7 +63,7 @@ final class OwnerService
         $search = $query['q'] ?? null;
         if ($search !== null && $search !== '') {
             $pattern = '%' . addcslashes($search, '%_\\') . '%';
-            $where[] = '(s.name LIKE :like ESCAPE \'\\\' OR s.email LIKE :like ESCAPE \'\\\' OR s.unique_school_prefix LIKE :like ESCAPE \'\\\')';
+            $where[] = '(s.name LIKE :like OR s.email LIKE :like OR s.school_prefix LIKE :like)';
             $params['like'] = $pattern;
         }
 
@@ -85,12 +90,12 @@ final class OwnerService
         $row = $this->find($schoolId);
         $now = Clock::now();
         $expires = $row['subscription_expires_at'];
-        if ($status === 'Active' && ($expires === null || Clock::parse($expires) === null || Clock::parse($expires) <= $now)) {
-            $expires = Clock::iso(Clock::plusDays(30, $now));
+        if ($status === 'Active' && !Clock::isFuture($expires, Clock::db($now))) {
+            $expires = Clock::db(Clock::plusDays(30, $now));
         }
         Db::run(
             'UPDATE schools SET subscription_status = :status, subscription_expires_at = :expires, updated_at = :now WHERE id = :id',
-            ['status' => $status, 'expires' => $expires, 'now' => Clock::nowIso($now), 'id' => $schoolId],
+            ['status' => $status, 'expires' => $expires, 'now' => Clock::db($now), 'id' => $schoolId],
         );
         return Serialize::school($this->find($schoolId));
     }
@@ -103,23 +108,97 @@ final class OwnerService
         if (($row['pending_reference'] ?? null) === null || $row['pending_reference'] === '') {
             throw ApiError::badRequest('No pending bank transfer found for this school.', 'NO_PENDING_PAYMENT');
         }
-        $reference = trim($data['reference']);
-        if ($reference !== '' && $row['pending_reference'] !== '' && $reference !== $row['pending_reference']) {
+        $reference = trim((string) ($data['reference'] ?? ''));
+        if ($reference !== '' && $reference !== $row['pending_reference']) {
             throw ApiError::badRequest('The supplied payment reference does not match the pending submission.', 'REFERENCE_MISMATCH');
         }
 
         $now = Clock::now();
         $current = Clock::parse((string) $row['subscription_expires_at']);
         $base = ($current !== null && $current > $now) ? $current : $now;
-        Db::run(
-            'UPDATE schools
-             SET subscription_status = \'Active\', subscription_expires_at = :expires,
-                 pending_reference = NULL, pending_amount = NULL, pending_submitted_at = NULL, pending_status = NULL,
-                 updated_at = :now
-             WHERE id = :id',
-            ['expires' => Clock::iso(Clock::plusDays(30, $base)), 'now' => Clock::nowIso($now), 'id' => $schoolId],
-        );
+        $expires = Clock::db(Clock::plusDays(30, $base));
+
+        $pdo = Db::pdo();
+        $pdo->beginTransaction();
+        try {
+            Db::run(
+                'UPDATE schools
+                 SET subscription_status = \'Active\', subscription_expires_at = :expires,
+                     pending_reference = NULL, pending_amount = NULL, pending_submitted_at = NULL, pending_status = NULL,
+                     updated_at = :now
+                 WHERE id = :id',
+                ['expires' => $expires, 'now' => Clock::db($now), 'id' => $schoolId],
+            );
+            Db::insert('subscriptions_log', [
+                'school_id' => $schoolId,
+                'payment_proof_ref' => $row['pending_reference'],
+                'amount' => (float) ($row['pending_amount'] ?? 0),
+                'status' => 'verified',
+                'note' => 'Payment verified by SaaS owner.',
+                'created_at' => Clock::db($now),
+                'verified_at' => Clock::db($now),
+            ]);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
         return Serialize::school($this->find($schoolId));
+    }
+
+    public function rejectPayment(array $data): array
+    {
+        $schoolId = $data['schoolId'];
+        $row = $this->find($schoolId);
+        if (($row['pending_reference'] ?? null) === null || $row['pending_reference'] === '') {
+            throw ApiError::badRequest('No pending bank transfer found for this school.', 'NO_PENDING_PAYMENT');
+        }
+        $now = Clock::nowDb();
+        $pdo = Db::pdo();
+        $pdo->beginTransaction();
+        try {
+            Db::run(
+                'UPDATE schools SET pending_reference = NULL, pending_amount = NULL, pending_submitted_at = NULL,
+                 pending_status = NULL, updated_at = :now WHERE id = :id',
+                ['now' => $now, 'id' => $schoolId],
+            );
+            Db::insert('subscriptions_log', [
+                'school_id' => $schoolId,
+                'payment_proof_ref' => $row['pending_reference'],
+                'amount' => (float) ($row['pending_amount'] ?? 0),
+                'status' => 'rejected',
+                'note' => trim((string) ($data['note'] ?? 'Payment could not be verified.')),
+                'created_at' => $now,
+                'verified_at' => $now,
+            ]);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+        return Serialize::school($this->find($schoolId));
+    }
+
+    public function paymentHistory(array $query): array
+    {
+        [$page, $limit, $skip] = Pagination::resolve($query['page'] ?? 1, $query['limit'] ?? 20);
+        $total = (int) Db::value('SELECT COUNT(*) FROM subscriptions_log');
+        $rows = Db::all(
+            'SELECT l.*, s.name AS school_name FROM subscriptions_log l
+             JOIN schools s ON s.id = l.school_id
+             ORDER BY l.created_at DESC LIMIT :limit OFFSET :offset',
+            ['limit' => $limit, 'offset' => $skip],
+        );
+        $items = array_map(static function (array $row): array {
+            $item = Serialize::subscriptionLog($row);
+            $item['schoolName'] = $row['school_name'];
+            return $item;
+        }, $rows);
+        return Pagination::paginate($items, $total, $page, $limit);
     }
 
     private function find(string $schoolId): array
@@ -134,7 +213,6 @@ final class OwnerService
     private function isActive(array $school, string $now): bool
     {
         return ($school['subscription_status'] ?? '') === 'Active'
-            && !empty($school['subscription_expires_at'])
-            && $school['subscription_expires_at'] > $now;
+            && Clock::isFuture($school['subscription_expires_at'] ?? null, $now);
     }
 }

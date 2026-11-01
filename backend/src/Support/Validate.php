@@ -157,16 +157,14 @@ final class Validate
                 }
                 return (new \DateTimeImmutable($value, new \DateTimeZone('UTC')))
                     ->setTime(0, 0, 0)
-                    ->format('Y-m-d\TH:i:s.v\Z');
+                    ->format('Y-m-d');
 
             case 'array':
                 if (!is_array($value)) {
                     $details[] = ['path' => $field, 'message' => 'Expected array'];
                     return null;
                 }
-                if (!array_is_list($value)) {
-                    $value = array_values($value);
-                }
+                $value = array_values($value);
                 if (isset($spec['min']) && count($value) < (int) $spec['min']) {
                     $details[] = ['path' => $field, 'message' => sprintf('Array must contain at least %d element(s)', (int) $spec['min'])];
                     return null;
@@ -178,7 +176,7 @@ final class Validate
                 $out = [];
                 foreach ($value as $index => $item) {
                     $path = $field . '.' . $index;
-                    if (is_array($itemsSpec)) {
+                    if (is_array($itemsSpec) && !isset($itemsSpec['type'])) {
                         $itemObj = is_array($item) ? $item : [];
                         $parsedItem = [];
                         foreach ($itemsSpec as $key => $keySpec) {

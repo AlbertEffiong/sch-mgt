@@ -19,7 +19,8 @@ final class AuthService
 {
     public function registerSchool(array $data): array
     {
-        if (($data['otp'] ?? '') !== '081689') {
+        $registrationOtp = (string) Env::get('SCHOOL_REGISTRATION_OTP', '081689');
+        if (($data['otp'] ?? '') !== $registrationOtp) {
             throw ApiError::forbidden('Invalid or missing owner verification OTP.', 'INVALID_OTP');
         }
         Password::assertStrong($data['password']);
@@ -30,19 +31,19 @@ final class AuthService
         if (Db::one('SELECT id FROM schools WHERE email = :email', ['email' => $email]) !== null) {
             throw ApiError::conflict('A school with this admin email already exists.', 'EMAIL_IN_USE');
         }
-        if (Db::one('SELECT id FROM schools WHERE unique_school_prefix = :prefix', ['prefix' => $prefix]) !== null) {
+        if (Db::one('SELECT id FROM schools WHERE school_prefix = :prefix', ['prefix' => $prefix]) !== null) {
             throw ApiError::conflict('This school prefix is already in use.', 'PREFIX_IN_USE');
         }
 
-        $now = Clock::nowIso();
+        $now = Clock::nowDb();
         $row = [
             'id' => Ids::newId(),
             'name' => $data['name'],
             'email' => $email,
-            'password' => Password::hash($data['password']),
+            'password_hash' => Password::hash($data['password']),
             'subscription_status' => $data['subscriptionStatus'] ?? 'Active',
-            'subscription_expires_at' => Clock::iso(Clock::plusDays(30)),
-            'unique_school_prefix' => $prefix,
+            'subscription_expires_at' => Clock::plusDaysDb(30),
+            'school_prefix' => $prefix,
             'principal_name' => $data['principalName'] ?? '',
             'plan_monthly' => $data['planMonthly'] ?? 49.0,
             'current_session' => Clock::defaultSession(),
@@ -78,7 +79,7 @@ final class AuthService
             throw ApiError::badRequest('Email is required for this role.', 'EMAIL_REQUIRED');
         }
         $row = Db::one('SELECT * FROM owners WHERE email = :email', ['email' => $email]);
-        if ($row === null || !Password::verify($password, $row['password'])) {
+        if ($row === null || !Password::verify($password, $row['password_hash'])) {
             throw ApiError::unauthorized('Invalid credentials.', 'INVALID_CREDENTIALS');
         }
         $claims = ['sub' => $row['id'], 'role' => 'owner', 'email' => $row['email']];
@@ -88,14 +89,15 @@ final class AuthService
     /** @return array{user: array, token: string} */
     private function loginAdmin(?string $email, string $password, string $otp): array
     {
-        if ($otp !== '081689') {
+        $adminOtp = (string) Env::get('ADMIN_LOGIN_OTP', '081689');
+        if ($otp !== $adminOtp) {
             throw ApiError::forbidden('Invalid or missing sign-in OTP.', 'INVALID_OTP');
         }
         if ($email === null || $email === '') {
             throw ApiError::badRequest('Email is required for this role.', 'EMAIL_REQUIRED');
         }
         $row = Db::one('SELECT * FROM schools WHERE email = :email', ['email' => $email]);
-        if ($row === null || !Password::verify($password, $row['password'])) {
+        if ($row === null || !Password::verify($password, $row['password_hash'])) {
             throw ApiError::unauthorized('Invalid credentials.', 'INVALID_CREDENTIALS');
         }
         $claims = ['sub' => $row['id'], 'role' => 'admin', 'schoolId' => $row['id'], 'email' => $row['email']];
@@ -115,7 +117,7 @@ final class AuthService
         if (!(bool) $row['verified']) {
             throw ApiError::forbidden('Account not activated. Please verify the OTP sent to your email.', 'OTP_REQUIRED');
         }
-        if (!Password::verify($password, $row['password'])) {
+        if (!Password::verify($password, $row['password_hash'])) {
             throw ApiError::unauthorized('Invalid credentials.', 'INVALID_CREDENTIALS');
         }
         $claims = ['sub' => $row['id'], 'role' => 'teacher', 'schoolId' => $row['school_id'], 'email' => $row['email']];
@@ -130,7 +132,7 @@ final class AuthService
             throw ApiError::badRequest('Student ID is required for student login.', 'STUDENT_ID_REQUIRED');
         }
         $row = Db::one('SELECT * FROM students WHERE student_id = :sid', ['sid' => $studentId]);
-        if ($row === null || !Password::verify($password, $row['password'])) {
+        if ($row === null || !Password::verify($password, $row['password_hash'])) {
             throw ApiError::unauthorized('Invalid credentials.', 'INVALID_CREDENTIALS');
         }
         $claims = ['sub' => $row['id'], 'role' => 'student', 'schoolId' => $row['school_id'], 'email' => $row['student_id']];
@@ -151,14 +153,15 @@ final class AuthService
         }
 
         $code = Otp::generate();
-        $now = Clock::nowIso();
+        $now = Clock::nowDb();
         $row = [
             'id' => Ids::newId(),
             'school_id' => $principal['schoolId'],
             'name' => $data['name'],
             'email' => $email,
-            'password' => null,
+            'password_hash' => null,
             'subject' => $data['subject'] ?? null,
+            'status' => 'Active',
             'verified' => 0,
             'otp_hash' => Password::hash($code),
             'otp_expires_at' => Otp::expiresAt(),
@@ -192,8 +195,9 @@ final class AuthService
         }
 
         Db::run(
-            'UPDATE teachers SET password = :password, verified = 1, otp_hash = NULL, otp_expires_at = NULL, updated_at = :now WHERE id = :id',
-            ['password' => Password::hash($data['password']), 'now' => Clock::nowIso(), 'id' => $row['id']],
+            'UPDATE teachers SET password_hash = :password, verified = 1, status = \'Active\',
+             otp_hash = NULL, otp_expires_at = NULL, updated_at = :now WHERE id = :id',
+            ['password' => Password::hash($data['password']), 'now' => Clock::nowDb(), 'id' => $row['id']],
         );
         $row = Db::one('SELECT * FROM teachers WHERE id = :id', ['id' => $row['id']]);
         return Serialize::teacher($row ?? []);

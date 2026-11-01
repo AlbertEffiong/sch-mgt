@@ -1,0 +1,27 @@
+﻿@media print {
+  .sidebar,
+  .topbar,
+  .drawer-backdrop,
+  .page-head .btn,
+  .print-hidden {
+    display: none !important;
+  }
+
+  .main {
+    margin-left: 0;
+  }
+
+  .content {
+    padding: 0;
+    max-width: none;
+  }
+
+  .report-card {
+    box-shadow: none;
+    border: 0;
+  }
+
+  body {
+    background: #fff;
+  }
+}

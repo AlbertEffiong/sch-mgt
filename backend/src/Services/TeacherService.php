@@ -66,12 +66,12 @@ final class TeacherService
             $byStudentId[strtoupper($student['student_id'])] = $student;
         }
 
-        $now = Clock::nowIso();
+        $now = Clock::nowDb();
         $saved = 0;
         foreach ($entries as $entry) {
             $student = $byStudentId[strtoupper(trim($entry['studentId']))] ?? null;
             if ($student === null) {
-                continue; // Unknown student IDs are silently skipped (original behaviour).
+                continue;
             }
             $ca1 = Grading::clamp($entry['ca1'], 20);
             $ca2 = Grading::clamp($entry['ca2'], 20);
@@ -86,19 +86,20 @@ final class TeacherService
                  VALUES
                     (:id, :schoolId, :classId, :className, :subject, :teacherId, :teacherEmail, :studentRef, :studentId,
                      :ca1, :ca2, :exam, :total, :grade, \'Pending Approval\', \'\', :term, :session, NULL, NULL, \'\', :now, :now)
-                 ON CONFLICT (school_id, class_id, subject, student_ref, term, session) DO UPDATE SET
-                    class_name = excluded.class_name,
-                    teacher_id = excluded.teacher_id,
-                    teacher_email = excluded.teacher_email,
-                    student_id = excluded.student_id,
-                    ca1 = excluded.ca1,
-                    ca2 = excluded.ca2,
-                    exam = excluded.exam,
-                    total = excluded.total,
-                    grade = excluded.grade,
+                 ON DUPLICATE KEY UPDATE
+                    class_name = VALUES(class_name),
+                    teacher_id = VALUES(teacher_id),
+                    teacher_email = VALUES(teacher_email),
+                    student_id = VALUES(student_id),
+                    ca1 = VALUES(ca1),
+                    ca2 = VALUES(ca2),
+                    exam = VALUES(exam),
+                    total = VALUES(total),
+                    grade = VALUES(grade),
                     status = \'Pending Approval\',
+                    submitted_at = NULL,
                     approved_at = NULL,
-                    updated_at = excluded.updated_at',
+                    updated_at = VALUES(updated_at)',
                 [
                     'id' => Ids::newId(),
                     'schoolId' => $schoolId,
@@ -159,7 +160,7 @@ final class TeacherService
              SET status = \'Pending Approval\', submitted_at = :now, principal_name = :principal, approved_at = NULL, updated_at = :now
              WHERE school_id = :school AND class_id = :classId AND subject = :subject
                AND teacher_id = :teacherId AND term = :term AND session = :session',
-            $filter + ['now' => Clock::nowIso(), 'principal' => $principal],
+            $filter + ['now' => Clock::nowDb(), 'principal' => $principal],
         );
 
         return ['submitted' => $submitted, 'principalName' => $principal];
@@ -169,7 +170,7 @@ final class TeacherService
     private function resolveClassSubject(string $schoolId, string $classId, string $subject): array
     {
         $class = $this->findClass($classId, $schoolId);
-        foreach (Serialize::decodeList($class['subjects']) as $candidate) {
+        foreach (Serialize::decodeList($class['subjects_json']) as $candidate) {
             if (strcasecmp((string) $candidate, $subject) === 0) {
                 return [$class, (string) $candidate];
             }

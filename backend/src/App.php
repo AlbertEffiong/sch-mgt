@@ -22,12 +22,12 @@ use Syntax\Support\Validate;
 
 final class App
 {
-    public readonly AuthService $auth;
-    public readonly OwnerService $owner;
-    public readonly AdminService $admin;
-    public readonly TeacherService $teacher;
-    public readonly StudentService $student;
-    public readonly Router $router;
+    public AuthService $auth;
+    public OwnerService $owner;
+    public AdminService $admin;
+    public TeacherService $teacher;
+    public StudentService $student;
+    public Router $router;
 
     /** @var list<string> */
     private array $corsOrigins;
@@ -46,7 +46,7 @@ final class App
         $this->teacher = new TeacherService();
         $this->student = new StudentService();
 
-        $this->corsOrigins = array_values(array_filter(array_map('trim', explode(',', (string) Env::get('CORS_ORIGINS', 'http://localhost:3000')))));
+        $this->corsOrigins = array_values(array_filter(array_map('trim', explode(',', (string) Env::get('CORS_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000')))));
         $this->rateWindowMs = Env::int('RATE_LIMIT_WINDOW_MS', 900000);
         $this->rateMax = Env::int('RATE_LIMIT_MAX', 10);
         $this->jwtSecret = (string) Env::get('JWT_SECRET', 'dev-insecure-secret-change-me');
@@ -289,7 +289,7 @@ final class App
         if ($response->statusCode() < 400) {
             // skipSuccessfulRequests: successful calls are refunded.
             Db::run(
-                'UPDATE rate_limits SET hits = MAX(hits - 1, 0) WHERE bucket = :bucket AND identifier = :identifier AND window_start = :window',
+                'UPDATE rate_limits SET hits = GREATEST(hits - 1, 0) WHERE bucket = :bucket AND identifier = :identifier AND window_start = :window',
                 ['bucket' => $bucket, 'identifier' => $identifier, 'window' => $window],
             );
         }
@@ -399,8 +399,7 @@ final class App
         }
         $school = $request->school;
         $active = ($school['subscription_status'] ?? '') === 'Active'
-            && !empty($school['subscription_expires_at'])
-            && $school['subscription_expires_at'] > Clock::nowIso();
+            && Clock::isFuture($school['subscription_expires_at'] ?? null);
         if (!$active) {
             throw ApiError::forbidden('The result portal is locked because the school subscription is not active.', 'SUBSCRIPTION_INACTIVE');
         }
@@ -432,7 +431,7 @@ final class App
     public static function schoolActive(array $school): bool
     {
         return ($school['subscription_status'] ?? '') === 'Active'
-            && !empty($school['subscription_expires_at'])
-            && $school['subscription_expires_at'] > Clock::nowIso();
+            && Clock::isFuture($school['subscription_expires_at'] ?? null);
     }
 }
+

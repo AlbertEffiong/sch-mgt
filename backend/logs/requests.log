@@ -147,3 +147,7 @@
 [req] 4f002fd29d68a247 POST /api/auth/login -> 401 (435.4ms)
 [req] 5859f2f69e908df7 POST /api/auth/login -> 401 (583.5ms)
 [req] 40124f6b2bba76a4 POST /api/auth/login -> 200 (511.3ms)
+[req] 529dd2637dd7a6f7 GET /api/auth/me -> 401 (5.1ms)
+[req] cbab369018a46432 OPTIONS /api/auth/login -> 204 (3.6ms)
+[req] cef72d73b4efe17a OPTIONS /api/student/login -> 204 (5.4ms)
+[req] d922e40cb71cb6ed GET /api/auth/me -> 401 (3.4ms)

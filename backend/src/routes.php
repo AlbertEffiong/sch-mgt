@@ -13,8 +13,6 @@ use Syntax\Support\Session;
  * Route table consumed by App::__construct().
  *
  * Every entry is [method, path, middleware, validations, handler].
- * Middleware names resolve in App::resolveMiddleware():
- *   authRate | auth | role:<role> | tenant | load | sub
  *
  * @return array<int, array{0: string, 1: string, 2: array<int, string>, 3: array<int, array>, 4: callable}>
  */
@@ -43,6 +41,7 @@ function buildRoutes(App $app): array
             'role' => (string) ($claims['role'] ?? ''),
             'schoolId' => $claims['schoolId'] ?? null,
             'email' => $claims['email'] ?? null,
+            'school' => null,
         ];
         $row = match ($base['role']) {
             'owner' => Db::one('SELECT * FROM owners WHERE id = :id', ['id' => $base['id']]),
@@ -60,9 +59,17 @@ function buildRoutes(App $app): array
             'owner' => Serialize::owner($row),
             'admin' => Serialize::school($row),
             'teacher' => Serialize::teacher($row),
-            'student' => Serialize::student($row) + ['schoolId' => $row['school_id']],
+            'student' => Serialize::student($row),
             default => [],
         };
+
+        if ($base['role'] === 'admin') {
+            $base['school'] = Serialize::school($row);
+        } elseif (in_array($base['role'], ['teacher', 'student'], true)) {
+            $schoolId = (string) ($row['school_id'] ?? '');
+            $school = $schoolId !== '' ? Db::one('SELECT * FROM schools WHERE id = :id', ['id' => $schoolId]) : null;
+            $base['school'] = $school === null ? null : Serialize::school($school);
+        }
         return $base;
     };
 
@@ -73,6 +80,7 @@ function buildRoutes(App $app): array
         'page' => ['type' => 'int', 'optional' => true, 'min' => 1],
         'limit' => ['type' => 'int', 'optional' => true, 'min' => 1, 'max' => 100],
     ];
+    $passwordRule = ['type' => 'string', 'password' => true, 'min' => 8, 'max' => 128];
 
     $adminScope = ['auth', 'role:admin', 'tenant', 'load'];
     $teacherScope = ['auth', 'role:teacher', 'tenant', 'load', 'sub'];
@@ -88,7 +96,7 @@ function buildRoutes(App $app): array
 
     $add('GET', '/ready', [], [], static function (): Response {
         Db::value('SELECT 1');
-        return Response::ok(['status' => 'ready', 'database' => 'sqlite']);
+        return Response::ok(['status' => 'ready', 'database' => 'mysql']);
     });
 
     // ---------------------------------------------------------------- auth
@@ -97,7 +105,7 @@ function buildRoutes(App $app): array
         'body' => [
             'name' => ['type' => 'string', 'min' => 2, 'max' => 120],
             'email' => ['type' => 'string', 'email' => true, 'lower' => true],
-            'password' => ['type' => 'string', 'password' => true],
+            'password' => $passwordRule,
             'uniqueSchoolPrefix' => ['type' => 'string', 'regex' => '/^[A-Za-z]{2,6}$/', 'regexMessage' => 'School prefix must be 2-6 letters.', 'upper' => true],
             'otp' => ['type' => 'string', 'regex' => '/^\d{6}$/', 'regexMessage' => 'OTP must be a 6-digit code.'],
             'principalName' => ['type' => 'string', 'optional' => true, 'max' => 120],
@@ -122,7 +130,7 @@ function buildRoutes(App $app): array
         'body' => [
             'name' => ['type' => 'string', 'min' => 2, 'max' => 120],
             'email' => ['type' => 'string', 'email' => true, 'lower' => true],
-            'subject' => ['type' => 'string', 'optional' => true, 'max' => 120],
+            'subject' => ['type' => 'string', 'optional' => true, 'max' => 160],
         ],
     ], static function (Request $r) use ($app): Response {
         $result = $app->auth->inviteTeacher(
@@ -136,7 +144,7 @@ function buildRoutes(App $app): array
         'body' => [
             'email' => ['type' => 'string', 'email' => true, 'lower' => true],
             'otp' => ['type' => 'string', 'regex' => '/^\d{6}$/', 'regexMessage' => 'OTP must be a 6-digit code.'],
-            'password' => ['type' => 'string', 'password' => true],
+            'password' => $passwordRule,
         ],
     ], static function (Request $r) use ($app): Response {
         return Response::ok($app->auth->verifyOtp($r->body), 'Teacher account activated.');
@@ -180,6 +188,19 @@ function buildRoutes(App $app): array
         return Response::ok($app->owner->verifyPayment($r->body), 'Payment verified. Subscription renewed.');
     });
 
+    $add('POST', '/api/owner/reject-payment', $ownerScope, [
+        'body' => [
+            'schoolId' => $objectid,
+            'note' => ['type' => 'string', 'optional' => true, 'max' => 500],
+        ],
+    ], static function (Request $r) use ($app): Response {
+        return Response::ok($app->owner->rejectPayment($r->body), 'Payment submission rejected.');
+    });
+
+    $add('GET', '/api/owner/payments', $ownerScope, [
+        'query' => $pageRules,
+    ], static fn(Request $r) => Response::ok($app->owner->paymentHistory($r->query)));
+
     // ---------------------------------------------------------------- school admin
 
     $add('GET', '/api/admin/school', $adminScope, [], static fn(Request $r) => Response::ok($app->admin->getSchool($r->tenantSchoolId)));
@@ -189,6 +210,7 @@ function buildRoutes(App $app): array
             'current_session' => ['type' => 'string', 'optional' => true] + $sessionRule,
             'current_term' => ['type' => 'string', 'optional' => true] + $termRule,
             'terms_per_session' => ['type' => 'int', 'optional' => true, 'min' => 1, 'max' => 3],
+            'principalName' => ['type' => 'string', 'optional' => true, 'max' => 120],
         ],
     ], static fn(Request $r) => Response::ok($app->admin->updateAcademicSetting($r->tenantSchoolId, $r->body)));
 
@@ -204,13 +226,32 @@ function buildRoutes(App $app): array
 
     $add('GET', '/api/admin/classes', $adminScope, [], static fn(Request $r) => Response::ok($app->admin->listClasses($r->tenantSchoolId)));
 
+    $add('PATCH', '/api/admin/classes/{id}', $adminScope, [
+        'params' => ['id' => $objectid],
+        'body' => [
+            'className' => ['type' => 'string', 'optional' => true, 'min' => 2, 'max' => 40],
+            'subjects' => ['type' => 'array', 'optional' => true, 'min' => 1, 'items' => ['type' => 'string', 'min' => 2, 'max' => 80]],
+            'teacherEmail' => ['type' => 'string', 'email' => true, 'optional' => true, 'lower' => true],
+        ],
+    ], static fn(Request $r) => Response::ok($app->admin->updateClass($r->tenantSchoolId, $r->params['id'], $r->body), 'Class updated.'));
+
+    $add('DELETE', '/api/admin/classes/{id}', $adminScope, [
+        'params' => ['id' => $objectid],
+    ], static function (Request $r) use ($app): Response {
+        $app->admin->deleteClass($r->tenantSchoolId, $r->params['id']);
+        return Response::ok(['removed' => true], 'Class deleted.');
+    });
+
     $add('POST', '/api/admin/students', $adminScope, [
         'body' => [
             'fullName' => ['type' => 'string', 'min' => 2, 'max' => 120],
             'gender' => ['type' => 'string', 'enum' => ['Male', 'Female']],
             'dob' => ['type' => 'date'],
             'currentClass' => ['type' => 'string', 'min' => 2, 'max' => 40],
-            'password' => ['type' => 'string', 'min' => 4, 'max' => 128],
+            'password' => $passwordRule,
+            'guardianName' => ['type' => 'string', 'optional' => true, 'max' => 120],
+            'guardianPhone' => ['type' => 'string', 'optional' => true, 'max' => 40],
+            'address' => ['type' => 'string', 'optional' => true, 'max' => 255],
         ],
     ], static function (Request $r) use ($app): Response {
         return Response::created($app->admin->enrollStudent($r->tenantSchoolId, $r->body), 'Student enrolled.');
@@ -223,6 +264,31 @@ function buildRoutes(App $app): array
         ],
     ], static fn(Request $r) => Response::ok($app->admin->listStudents($r->tenantSchoolId, $r->query)));
 
+    $add('PATCH', '/api/admin/students/{id}', $adminScope, [
+        'params' => ['id' => $objectid],
+        'body' => [
+            'fullName' => ['type' => 'string', 'optional' => true, 'min' => 2, 'max' => 120],
+            'gender' => ['type' => 'string', 'optional' => true, 'enum' => ['Male', 'Female']],
+            'dob' => ['type' => 'date', 'optional' => true],
+            'currentClass' => ['type' => 'string', 'optional' => true, 'min' => 2, 'max' => 40],
+            'guardianName' => ['type' => 'string', 'optional' => true, 'max' => 120],
+            'guardianPhone' => ['type' => 'string', 'optional' => true, 'max' => 40],
+            'address' => ['type' => 'string', 'optional' => true, 'max' => 255],
+        ],
+    ], static fn(Request $r) => Response::ok($app->admin->updateStudent($r->tenantSchoolId, $r->params['id'], $r->body), 'Student updated.'));
+
+    $add('DELETE', '/api/admin/students/{id}', $adminScope, [
+        'params' => ['id' => $objectid],
+    ], static function (Request $r) use ($app): Response {
+        $app->admin->deleteStudent($r->tenantSchoolId, $r->params['id']);
+        return Response::ok(['removed' => true], 'Student removed.');
+    });
+
+    $add('POST', '/api/admin/students/{id}/reset-password', $adminScope, [
+        'params' => ['id' => $objectid],
+        'body' => ['password' => $passwordRule],
+    ], static fn(Request $r) => Response::ok($app->admin->resetStudentPassword($r->tenantSchoolId, $r->params['id'], $r->body), 'Student password reset.'));
+
     $add('GET', '/api/admin/teachers', $adminScope, [
         'query' => $pageRules,
     ], static fn(Request $r) => Response::ok($app->admin->listTeachers($r->tenantSchoolId, $r->query)));
@@ -231,7 +297,8 @@ function buildRoutes(App $app): array
         'params' => ['id' => $objectid],
         'body' => [
             'name' => ['type' => 'string', 'optional' => true, 'min' => 2, 'max' => 120],
-            'subject' => ['type' => 'string', 'optional' => true, 'max' => 120],
+            'subject' => ['type' => 'string', 'optional' => true, 'max' => 160],
+            'status' => ['type' => 'string', 'optional' => true, 'enum' => ['Active', 'On Leave', 'Inactive']],
         ],
     ], static fn(Request $r) => Response::ok($app->admin->updateTeacher($r->tenantSchoolId, $r->params['id'], $r->body)));
 
@@ -259,11 +326,13 @@ function buildRoutes(App $app): array
     $add('POST', '/api/admin/subscription/bank-transfer', $adminScope, [
         'body' => [
             'reference' => ['type' => 'string', 'min' => 3, 'max' => 120],
-            'amount' => ['type' => 'number', 'min' => 0],
+            'amount' => ['type' => 'number', 'min' => 1],
         ],
     ], static function (Request $r) use ($app): Response {
         return Response::ok($app->admin->submitBankTransfer($r->tenantSchoolId, $r->body), 'Receipt submitted for verification.');
     });
+
+    $add('GET', '/api/admin/subscription/logs', $adminScope, [], static fn(Request $r) => Response::ok($app->admin->subscriptionLogs($r->tenantSchoolId)));
 
     // ---------------------------------------------------------------- teacher
 
@@ -293,9 +362,9 @@ function buildRoutes(App $app): array
                 'min' => 1,
                 'items' => [
                     'studentId' => ['type' => 'string', 'min' => 3, 'max' => 40],
-                    'ca1' => ['type' => 'number', 'min' => 0, 'max' => 100],
-                    'ca2' => ['type' => 'number', 'min' => 0, 'max' => 100],
-                    'exam' => ['type' => 'number', 'min' => 0, 'max' => 100],
+                    'ca1' => ['type' => 'number', 'min' => 0, 'max' => 20],
+                    'ca2' => ['type' => 'number', 'min' => 0, 'max' => 20],
+                    'exam' => ['type' => 'number', 'min' => 0, 'max' => 60],
                 ],
             ],
         ],
