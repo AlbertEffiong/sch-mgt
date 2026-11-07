@@ -21,7 +21,7 @@ php -S localhost:4000 router.php
 ```
 
 Keep the backend terminal running while using the portal. The frontend is
-configured to call `http://localhost:4000`.
+configured to call `http://localhost/sch/`.
 
 ## 2. Serve the frontend over http
 
@@ -44,7 +44,7 @@ the backend's `CORS_ORIGINS` (the defaults include `http://localhost:3000`,
 
 ```html
 <script>
-  window.API_CONFIG = { baseUrl: "http://localhost:4000", authMode: "cookie" };
+  window.API_CONFIG = { baseUrl: "http://localhost/sch/", authMode: "cookie" };
 </script>
 ```
 
@@ -60,7 +60,7 @@ the backend's `CORS_ORIGINS` (the defaults include `http://localhost:3000`,
 
 ```html
 <script>
-  window.API_CONFIG = { baseUrl: "http://localhost:4000", authMode: "cookie", useLiveApi: true };
+  window.API_CONFIG = { baseUrl: "http://localhost/sch/", authMode: "cookie", useLiveApi: true };
 </script>
 ```
 
