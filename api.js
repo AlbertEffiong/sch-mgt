@@ -14,7 +14,7 @@
    Usage (browser):
        <script src="api.js"></script>
        <script>
-         SyntaxApi.configure({ baseUrl: 'http://localhost:4000' });
+         SyntaxApi.configure({ baseUrl: 'http://localhost/sch/' });
          await SyntaxApi.auth.login('admin', { email, password });
          const classes = await SyntaxApi.admin.listClasses();
        </script>
@@ -26,7 +26,7 @@
   'use strict';
 
   var cfg = {
-    baseUrl: 'http://localhost:4000',
+    baseUrl: 'http://localhost/sch/',
     // 'cookie' (default, browsers) or 'bearer' (stateless clients).
     authMode: 'cookie',
     credentials: 'include',
