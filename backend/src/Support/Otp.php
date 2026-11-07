@@ -15,7 +15,7 @@ final class Otp
 
     public static function expiresAt(): string
     {
-        return Clock::iso(Clock::plusMinutes(self::TTL_MINUTES));
+        return Clock::db(Clock::plusMinutes(self::TTL_MINUTES));
     }
 
     public static function verify(string $code, ?string $hash, ?string $expiresAt): bool

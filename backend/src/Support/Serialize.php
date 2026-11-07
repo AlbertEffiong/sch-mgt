@@ -14,7 +14,7 @@ final class Serialize
             $pending = [
                 'reference' => $row['pending_reference'],
                 'amount' => (float) $row['pending_amount'],
-                'submittedAt' => $row['pending_submitted_at'],
+                'submittedAt' => Clock::fromDb($row['pending_submitted_at'] ?? null),
                 'status' => $row['pending_status'],
             ];
         }
@@ -23,8 +23,8 @@ final class Serialize
             'name' => $row['name'],
             'email' => $row['email'],
             'subscriptionStatus' => $row['subscription_status'],
-            'subscriptionExpiresAt' => $row['subscription_expires_at'],
-            'uniqueSchoolPrefix' => $row['unique_school_prefix'],
+            'subscriptionExpiresAt' => Clock::fromDb($row['subscription_expires_at'] ?? null),
+            'uniqueSchoolPrefix' => $row['school_prefix'],
             'principalName' => $row['principal_name'] ?? '',
             'planMonthly' => (float) $row['plan_monthly'],
             'academic' => [
@@ -34,21 +34,22 @@ final class Serialize
             ],
             'hasPendingPayment' => $pending !== null,
             'pendingPayment' => $pending,
-            'createdAt' => $row['created_at'],
+            'createdAt' => Clock::fromDb($row['created_at'] ?? null),
         ];
     }
 
     public static function teacher(array $row): array
     {
-        $out = [
+        return [
             'id' => $row['id'],
             'schoolId' => $row['school_id'],
             'name' => $row['name'],
             'email' => $row['email'],
             'subject' => $row['subject'] ?? null,
+            'status' => $row['status'] ?? 'Active',
             'verified' => (bool) $row['verified'],
+            'createdAt' => Clock::fromDb($row['created_at'] ?? null),
         ];
-        return $out;
     }
 
     public static function student(array $row): array
@@ -60,6 +61,10 @@ final class Serialize
             'gender' => $row['gender'],
             'dob' => $row['dob'],
             'currentClass' => $row['current_class'],
+            'guardianName' => $row['guardian_name'] ?? null,
+            'guardianPhone' => $row['guardian_phone'] ?? null,
+            'address' => $row['address'] ?? null,
+            'createdAt' => Clock::fromDb($row['created_at'] ?? null),
         ];
     }
 
@@ -68,7 +73,7 @@ final class Serialize
         $out = [
             'id' => $row['id'],
             'className' => $row['class_name'],
-            'subjects' => self::decodeList($row['subjects'] ?? '[]'),
+            'subjects' => self::decodeList($row['subjects_json'] ?? '[]'),
         ];
         if (($row['teacher_email'] ?? null) !== null && $row['teacher_email'] !== '') {
             $out['teacherEmail'] = $row['teacher_email'];
@@ -78,7 +83,7 @@ final class Serialize
 
     public static function assessment(array $row): array
     {
-        $out = [
+        return [
             'id' => $row['id'],
             'classId' => $row['class_id'],
             'className' => $row['class_name'],
@@ -94,11 +99,24 @@ final class Serialize
             'principalName' => $row['principal_name'] ?? '',
             'term' => $row['term'],
             'session' => $row['session'],
-            'submittedAt' => $row['submitted_at'] ?? null,
-            'approvedAt' => $row['approved_at'] ?? null,
+            'submittedAt' => Clock::fromDb($row['submitted_at'] ?? null),
+            'approvedAt' => Clock::fromDb($row['approved_at'] ?? null),
             'note' => $row['note'] ?? null,
         ];
-        return $out;
+    }
+
+    public static function subscriptionLog(array $row): array
+    {
+        return [
+            'id' => (int) $row['id'],
+            'schoolId' => $row['school_id'],
+            'reference' => $row['payment_proof_ref'],
+            'amount' => (float) $row['amount'],
+            'status' => $row['status'],
+            'note' => $row['note'] ?? null,
+            'createdAt' => Clock::fromDb($row['created_at'] ?? null),
+            'verifiedAt' => Clock::fromDb($row['verified_at'] ?? null),
+        ];
     }
 
     public static function owner(array $row): array

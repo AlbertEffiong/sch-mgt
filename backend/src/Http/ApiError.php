@@ -12,9 +12,9 @@ use Exception;
  */
 final class ApiError extends Exception
 {
-    public readonly int $status;
-    public readonly ?string $errorCode;
-    public readonly mixed $details;
+    public int $status;
+    public ?string $errorCode;
+    public mixed $details;
 
     public function __construct(int $status, string $message, ?string $code = null, mixed $details = null)
     {
@@ -59,3 +59,4 @@ final class ApiError extends Exception
         return new self(500, $message, $code, $details);
     }
 }
+

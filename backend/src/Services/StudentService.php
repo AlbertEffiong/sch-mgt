@@ -97,7 +97,7 @@ final class StudentService
             'schoolId' => $schoolId,
             'school' => [
                 'name' => $school['name'] ?? '',
-                'uniqueSchoolPrefix' => $school['unique_school_prefix'] ?? '',
+                'uniqueSchoolPrefix' => $school['school_prefix'] ?? '',
                 'principalName' => $school['principal_name'] ?? '',
             ],
             'student' => [
@@ -165,7 +165,7 @@ final class StudentService
             'schoolId' => $student['school_id'],
             'school' => [
                 'name' => $school['name'] ?? '',
-                'uniqueSchoolPrefix' => $school['unique_school_prefix'] ?? '',
+                'uniqueSchoolPrefix' => $school['school_prefix'] ?? '',
                 'principalName' => $school['principal_name'] ?? '',
             ],
             'student' => [
@@ -228,3 +228,4 @@ final class StudentService
         return $map;
     }
 }
+

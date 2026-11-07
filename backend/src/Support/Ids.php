@@ -9,7 +9,7 @@ final class Ids
 {
     public static function newId(): string
     {
-        return bin2hex(pack('N', time()) . random_bytes(5));
+        return bin2hex(pack('N', time()) . random_bytes(8));
     }
 
     public static function isId(mixed $value): bool

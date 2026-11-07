@@ -3,10 +3,10 @@
 declare(strict_types=1);
 
 /**
- * Database seeder.
+ * MySQL database seeder.
  *
- *   php bin/seed.php            # platform owner only (from .env)
- *   php bin/seed.php --demo     # owner + full demo tenant (Bright Future Academy …)
+ *   php bin/seed.php                  # platform owner only (from .env)
+ *   php bin/seed.php --demo           # owner + full demo tenants
  *   php bin/seed.php --fresh --demo   # wipe every table first, then seed
  */
 
@@ -35,18 +35,20 @@ Env::load(dirname(__DIR__) . '/.env');
 Schema::migrate();
 
 if ($fresh) {
-    foreach (['assessments', 'students', 'classes', 'teachers', 'schools', 'owners', 'counters', 'rate_limits'] as $table) {
+    // Child tables first so foreign keys never block the wipe.
+    foreach (['assessments', 'subscriptions_log', 'students', 'classes', 'teachers', 'schools', 'owners', 'counters', 'rate_limits'] as $table) {
         Db::run('DELETE FROM ' . $table);
     }
     echo "[seed] wiped all tables\n";
 }
 
+$now = Clock::nowDb();
+
 // ------------------------------------------------------------------ owner
 
 $ownerEmail = strtolower((string) Env::get('OWNER_EMAIL', 'owner@syntaxsaas.io'));
 $ownerName = (string) Env::get('OWNER_NAME', 'SaaS Owner');
-$ownerPassword = (string) Env::get('OWNER_PASSWORD', 'ChangeMe@123');
-$now = Clock::nowIso();
+$ownerPassword = (string) Env::get('OWNER_PASSWORD', 'Owner@123');
 
 $owner = Db::one('SELECT id FROM owners WHERE email = :email', ['email' => $ownerEmail]);
 if ($owner === null) {
@@ -54,13 +56,13 @@ if ($owner === null) {
         'id' => Ids::newId(),
         'name' => $ownerName,
         'email' => $ownerEmail,
-        'password' => Password::hash($ownerPassword),
+        'password_hash' => Password::hash($ownerPassword),
         'created_at' => $now,
         'updated_at' => $now,
     ]);
     echo "[seed] owner {$ownerEmail} created\n";
 } else {
-    Db::run('UPDATE owners SET name = :name, password = :password, updated_at = :now WHERE id = :id', [
+    Db::run('UPDATE owners SET name = :name, password_hash = :password, updated_at = :now WHERE id = :id', [
         'name' => $ownerName,
         'password' => Password::hash($ownerPassword),
         'now' => $now,
@@ -70,15 +72,15 @@ if ($owner === null) {
 }
 
 if (!$demo) {
-    echo "[seed] done — run with --demo to seed a demo school\n";
+    echo "[seed] done - run with --demo to seed demo schools\n";
     exit(0);
 }
 
 // ------------------------------------------------------------------ demo tenants
 
-const ADMIN_PASSWORD = 'school123';
-const TEACHER_PASSWORD = 'teach123';
-const STUDENT_PASSWORD = '1234'; // demo PIN pre-filled by the portal login form
+const ADMIN_PASSWORD = 'School@123';
+const TEACHER_PASSWORD = 'Teach@123';
+const STUDENT_PASSWORD = 'Student@123';
 
 $CLASS_SUBJECTS = [
     'JSS1' => ['Mathematics', 'English Language', 'Basic Science', 'Social Studies', 'Civic Education', 'Computer Studies'],
@@ -104,17 +106,16 @@ $schools = [
 
 $schoolIds = [];
 foreach ($schools as [$prefix, $name, $email, $principal, $plan, $status, $days, $pending]) {
-    $expires = Clock::iso(Clock::plusDays($days));
-    $existing = Db::one('SELECT id FROM schools WHERE unique_school_prefix = :prefix', ['prefix' => $prefix]);
+    $existing = Db::one('SELECT id FROM schools WHERE school_prefix = :prefix', ['prefix' => $prefix]);
     $id = $existing['id'] ?? Ids::newId();
     $row = [
         'id' => $id,
         'name' => $name,
         'email' => $email,
-        'password' => Password::hash(ADMIN_PASSWORD),
+        'password_hash' => Password::hash(ADMIN_PASSWORD),
         'subscription_status' => $status,
-        'subscription_expires_at' => $expires,
-        'unique_school_prefix' => $prefix,
+        'subscription_expires_at' => Clock::plusDaysDb($days),
+        'school_prefix' => $prefix,
         'principal_name' => $principal,
         'plan_monthly' => $plan,
         'current_session' => Clock::defaultSession(),
@@ -122,7 +123,7 @@ foreach ($schools as [$prefix, $name, $email, $principal, $plan, $status, $days,
         'terms_per_session' => 3,
         'pending_reference' => $pending['reference'] ?? null,
         'pending_amount' => $pending['amount'] ?? null,
-        'pending_submitted_at' => $pending !== null ? Clock::nowIso() : null,
+        'pending_submitted_at' => $pending !== null ? $now : null,
         'pending_status' => $pending !== null ? 'pending' : null,
         'created_at' => $now,
         'updated_at' => $now,
@@ -131,17 +132,17 @@ foreach ($schools as [$prefix, $name, $email, $principal, $plan, $status, $days,
         Db::insert('schools', $row);
     } else {
         Db::run(
-            'UPDATE schools SET name = :name, email = :email, subscription_status = :subscription_status,
-             subscription_expires_at = :subscription_expires_at, principal_name = :principal_name,
-             plan_monthly = :plan_monthly, current_session = :current_session, current_term = :current_term,
-             pending_reference = :pending_reference, pending_amount = :pending_amount,
+            'UPDATE schools SET name = :name, email = :email, password_hash = :password_hash,
+             subscription_status = :subscription_status, subscription_expires_at = :subscription_expires_at,
+             principal_name = :principal_name, plan_monthly = :plan_monthly, current_session = :current_session,
+             current_term = :current_term, pending_reference = :pending_reference, pending_amount = :pending_amount,
              pending_submitted_at = :pending_submitted_at, pending_status = :pending_status, updated_at = :now
              WHERE id = :id',
             $row + ['now' => $now],
         );
     }
     $schoolIds[$prefix] = $id;
-    echo "[seed] school {$prefix} — {$name} ({$status})\n";
+    echo "[seed] school {$prefix} - {$name} ({$status})\n";
 }
 
 $bfa = $schoolIds['BFA'];
@@ -152,20 +153,20 @@ $classIds = [];
 foreach ($CLASS_SUBJECTS as $level => $subjects) {
     $existing = Db::one('SELECT id FROM classes WHERE school_id = :school AND class_name = :name', ['school' => $bfa, 'name' => $level]);
     $id = $existing['id'] ?? Ids::newId();
-    $row = [
-        'id' => $id,
-        'school_id' => $bfa,
-        'class_name' => $level,
-        'subjects' => json_encode($subjects, JSON_UNESCAPED_UNICODE),
-        'teacher_email' => null,
-        'created_at' => $now,
-        'updated_at' => $now,
-    ];
+    $subjectsJson = json_encode($subjects, JSON_UNESCAPED_UNICODE);
     if ($existing === null) {
-        Db::insert('classes', $row);
+        Db::insert('classes', [
+            'id' => $id,
+            'school_id' => $bfa,
+            'class_name' => $level,
+            'subjects_json' => $subjectsJson,
+            'teacher_email' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
     } else {
-        Db::run('UPDATE classes SET subjects = :subjects, updated_at = :now WHERE id = :id', [
-            'subjects' => $row['subjects'], 'now' => $now, 'id' => $id,
+        Db::run('UPDATE classes SET subjects_json = :subjects, updated_at = :now WHERE id = :id', [
+            'subjects' => $subjectsJson, 'now' => $now, 'id' => $id,
         ]);
     }
     $classIds[$level] = $id;
@@ -186,29 +187,31 @@ $teacherIds = [];
 foreach ($teachers as [$name, $email, $subject, $verified]) {
     $existing = Db::one('SELECT id FROM teachers WHERE email = :email', ['email' => $email]);
     $id = $existing['id'] ?? Ids::newId();
-    $row = [
-        'id' => $id,
-        'school_id' => $bfa,
-        'name' => $name,
-        'email' => $email,
-        'password' => Password::hash(TEACHER_PASSWORD),
-        'subject' => $subject,
-        'verified' => $verified,
-        'otp_hash' => null,
-        'otp_expires_at' => null,
-        'created_at' => $now,
-        'updated_at' => $now,
-    ];
     if ($existing === null) {
-        Db::insert('teachers', $row);
-    } else {
-        Db::run('UPDATE teachers SET name = :name, school_id = :school_id, subject = :subject, verified = :verified, updated_at = :now WHERE id = :id', [
-            'name' => $name, 'school_id' => $bfa, 'subject' => $subject, 'verified' => $verified, 'now' => $now, 'id' => $id,
+        Db::insert('teachers', [
+            'id' => $id,
+            'school_id' => $bfa,
+            'name' => $name,
+            'email' => $email,
+            'password_hash' => Password::hash(TEACHER_PASSWORD),
+            'subject' => $subject,
+            'status' => 'Active',
+            'verified' => $verified,
+            'otp_hash' => null,
+            'otp_expires_at' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
         ]);
+    } else {
+        Db::run(
+            'UPDATE teachers SET name = :name, school_id = :school_id, subject = :subject,
+             status = \'Active\', verified = :verified, updated_at = :now WHERE id = :id',
+            ['name' => $name, 'school_id' => $bfa, 'subject' => $subject, 'verified' => $verified, 'now' => $now, 'id' => $id],
+        );
     }
     $teacherIds[$email] = $id;
 }
-echo '[seed] ' . count($teacherIds) . " teachers (password " . TEACHER_PASSWORD . ")\n";
+echo '[seed] ' . count($teacherIds) . ' teachers (password ' . TEACHER_PASSWORD . ")\n";
 
 // ------------------------------------------------------------------ students (BFA)
 
@@ -236,35 +239,38 @@ foreach ($seeds as [$name, $gender, $dob, $class, $entryClass, $year]) {
     $existing = Db::one('SELECT id FROM students WHERE student_id = :sid', ['sid' => $studentId]);
     $id = $existing['id'] ?? Ids::newId();
     $history = buildStudentHistory($studentId, $class, $entryClass, $year);
-    $row = [
-        'id' => $id,
-        'school_id' => $bfa,
-        'student_id' => $studentId,
-        'full_name' => $name,
-        'gender' => $gender,
-        'dob' => $dob,
-        'current_class' => $class,
-        'password' => Password::hash(STUDENT_PASSWORD),
-        'historical_results' => json_encode($history, JSON_UNESCAPED_UNICODE),
-        'created_at' => $year . '-09-01T08:00:00.000Z',
-        'updated_at' => $now,
-    ];
     if ($existing === null) {
-        Db::insert('students', $row);
-    } else {
-        Db::run('UPDATE students SET full_name = :full_name, gender = :gender, dob = :dob, current_class = :current_class, historical_results = :historical_results, updated_at = :now WHERE id = :id', [
-            'full_name' => $name, 'gender' => $gender, 'dob' => $dob, 'current_class' => $class,
-            'historical_results' => $row['historical_results'], 'now' => $now, 'id' => $id,
+        Db::insert('students', [
+            'id' => $id,
+            'school_id' => $bfa,
+            'student_id' => $studentId,
+            'full_name' => $name,
+            'gender' => $gender,
+            'dob' => $dob,
+            'current_class' => $class,
+            'password_hash' => Password::hash(STUDENT_PASSWORD),
+            'historical_results' => json_encode($history, JSON_UNESCAPED_UNICODE),
+            'guardian_name' => null,
+            'guardian_phone' => null,
+            'address' => null,
+            'created_at' => $year . '-09-01 08:00:00',
+            'updated_at' => $now,
         ]);
+    } else {
+        Db::run(
+            'UPDATE students SET full_name = :full_name, gender = :gender, dob = :dob,
+             current_class = :current_class, historical_results = :historical_results, updated_at = :now WHERE id = :id',
+            [
+                'full_name' => $name, 'gender' => $gender, 'dob' => $dob, 'current_class' => $class,
+                'historical_results' => json_encode($history, JSON_UNESCAPED_UNICODE), 'now' => $now, 'id' => $id,
+            ],
+        );
     }
     // Keep the enrollment counter ahead of the seeded IDs.
-    Db::run(
-        'INSERT INTO counters (key, seq) VALUES (:key, :seq)
-         ON CONFLICT (key) DO UPDATE SET seq = MAX(seq, excluded.seq)',
-        ['key' => $key, 'seq' => $seq],
-    );
+    Db::run('INSERT IGNORE INTO counters (counter_key, seq) VALUES (:key, 0)', ['key' => $key]);
+    Db::run('UPDATE counters SET seq = GREATEST(seq, :seq) WHERE counter_key = :key', ['seq' => $seq, 'key' => $key]);
 }
-echo '[seed] ' . count($seeds) . ' students with historical results (password/PIN ' . STUDENT_PASSWORD . ")\n";
+echo '[seed] ' . count($seeds) . ' students with historical results (password ' . STUDENT_PASSWORD . ")\n";
 
 // ------------------------------------------------------------------ pending assessments (BFA)
 
@@ -311,7 +317,7 @@ foreach ($pendingSets as [$class, $subject, $teacherEmail]) {
             'principal_name' => '',
             'term' => $term,
             'session' => $session,
-            'submitted_at' => Clock::nowIso(),
+            'submitted_at' => $now,
             'approved_at' => null,
             'note' => '',
             'created_at' => $now,
@@ -319,13 +325,13 @@ foreach ($pendingSets as [$class, $subject, $teacherEmail]) {
         ]);
     }
 }
-echo "[seed] pending assessments for " . count($pendingSets) . " class/subject sheets\n";
+echo '[seed] pending assessments for ' . count($pendingSets) . " class/subject sheets\n";
 
-echo "[seed] done — demo logins:\n";
+echo "[seed] done - demo logins:\n";
 echo "       owner    : {$ownerEmail} / {$ownerPassword}\n";
 echo "       admin    : admin@brightfuture.edu / " . ADMIN_PASSWORD . "\n";
 echo "       teacher  : teacher@brightfuture.edu / " . TEACHER_PASSWORD . "\n";
-echo "       student  : BFA/2026/001 (or BFA/2025/001 …) / " . STUDENT_PASSWORD . "\n";
+echo "       student  : BFA/2026/001 (or BFA/2025/001 ...) / " . STUDENT_PASSWORD . "\n";
 
 // ------------------------------------------------------------------ helpers
 

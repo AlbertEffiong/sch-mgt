@@ -10,13 +10,25 @@ use DateTimeZone;
 final class Clock
 {
     private const TZ = 'UTC';
+    public const DB_FORMAT = 'Y-m-d H:i:s';
 
     public static function now(): DateTimeImmutable
     {
         return new DateTimeImmutable('now', new DateTimeZone(self::TZ));
     }
 
-    /** ISO-8601 UTC with milliseconds, e.g. 2026-10-19T12:34:56.789Z (matches Mongo serialization). */
+    /** MySQL DATETIME representation (UTC). */
+    public static function db(?DateTimeImmutable $at = null): string
+    {
+        return ($at ?? self::now())->format(self::DB_FORMAT);
+    }
+
+    public static function nowDb(): string
+    {
+        return self::db();
+    }
+
+    /** ISO-8601 UTC with milliseconds, e.g. 2026-10-19T12:34:56.789Z. */
     public static function iso(?DateTimeImmutable $at = null): string
     {
         $at ??= self::now();
@@ -28,9 +40,23 @@ final class Clock
         return self::iso();
     }
 
+    public static function fromDb(?string $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        $parsed = self::parse($value);
+        return $parsed === null ? null : self::iso($parsed);
+    }
+
     public static function plusDays(int $days, ?DateTimeImmutable $from = null): DateTimeImmutable
     {
         return ($from ?? self::now())->modify(sprintf('%+d days', $days));
+    }
+
+    public static function plusDaysDb(int $days, ?DateTimeImmutable $from = null): string
+    {
+        return self::db(self::plusDays($days, $from));
     }
 
     public static function plusMinutes(int $minutes, ?DateTimeImmutable $from = null): DateTimeImmutable
@@ -49,8 +75,8 @@ final class Clock
             return null;
         }
         if (is_string($value)) {
-            $ts = strtotime($value);
-            return $ts === false ? $value : self::iso((new DateTimeImmutable('@' . $ts))->setTimezone(new DateTimeZone(self::TZ)));
+            $parsed = self::parse($value);
+            return $parsed === null ? $value : self::iso($parsed);
         }
         return self::iso();
     }
@@ -66,10 +92,15 @@ final class Clock
 
     public static function parse(string $value): ?DateTimeImmutable
     {
-        $ts = strtotime($value);
-        if ($ts === false) {
+        try {
+            return (new DateTimeImmutable($value, new DateTimeZone(self::TZ)))->setTimezone(new DateTimeZone(self::TZ));
+        } catch (\Throwable) {
             return null;
         }
-        return (new DateTimeImmutable('@' . $ts))->setTimezone(new DateTimeZone(self::TZ));
+    }
+
+    public static function isFuture(?string $dbDate, ?string $nowDb = null): bool
+    {
+        return $dbDate !== null && $dbDate !== '' && $dbDate > ($nowDb ?? self::nowDb());
     }
 }
